@@ -1,0 +1,216 @@
+name: "🚀 Sincronización y Despliegue EC2"
+
+on:
+  push:
+    branches: [super-borg-v0.1, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Ambiente de despliegue'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  EC2_HOST: 18.222.255.81
+  EC2_USER: ubuntu
+  PROJECT_PATH: /opt/augeborg
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════
+  # JOB 1: VALIDACIÓN DE CÓDIGO
+  # ═══════════════════════════════════════════════════════════════════════
+  validate:
+    name: "🔍 Validación de Código"
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 📦 Instalar dependencias raíz
+        run: npm ci --silent
+
+      - name: 📦 Instalar dependencias Backend
+        run: npm ci --prefix augeborg-backend --silent
+
+      - name: 📦 Instalar dependencias Frontend
+        run: npm ci --prefix augeborg-frontend --silent
+
+      - name: 🔍 Linting Backend
+        run: npm run lint --prefix augeborg-backend --if-present
+
+      - name: 🔍 Linting Frontend
+        run: npm run lint --prefix augeborg-frontend --if-present
+
+      - name: 🔨 Compilar Backend
+        run: npm run build --prefix augeborg-backend
+
+      - name: 🔨 Compilar Frontend
+        run: npm run build --prefix augeborg-frontend
+
+      - name: 📊 Reportar estado
+        if: always()
+        run: |
+          echo "## 📊 Estado de Validación" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Componente | Estado |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend    | ${{ job.status == 'success' && '✅ OK' || '❌ FALLÓ' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend   | ${{ job.status == 'success' && '✅ OK' || '❌ FALLÓ' }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # JOB 2: SINCRONIZACIÓN CON EC2 (Solo si validación pasa)
+  # ═══════════════════════════════════════════════════════════════════════
+  sync-ec2:
+    name: "🔄 Sincronización EC2"
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔐 Configurar SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: 📡 Añadir EC2 a known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: 🔄 Sincronizar código con EC2
+        id: sync
+        run: |
+          echo "📡 Conectando a EC2..."
+          ssh ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'ENDSSH'
+            set -e
+
+            echo "📁 Navegando al proyecto..."
+            cd ${{ env.PROJECT_PATH }} || {
+              echo "❌ Directorio no encontrado. Clonando..."
+              git clone https://github.com/${{ github.repository }}.git ${{ env.PROJECT_PATH }}
+              cd ${{ env.PROJECT_PATH }}
+            }
+
+            echo "🔄 Sincronizando con GitHub..."
+            git fetch origin
+            git reset --hard origin/${{ github.ref_name }}
+
+            echo "📦 Instalando dependencias..."
+            npm ci --silent
+            npm ci --prefix augeborg-backend --silent
+            npm ci --prefix augeborg-frontend --silent
+
+            echo "🧹 Limpiando migraciones huérfanas..."
+            rm -rf augeborg-frontend/migrations 2>/dev/null || true
+
+            echo "✅ Sincronización completada"
+          ENDSSH
+
+      - name: 📊 Reportar sincronización
+        run: |
+          echo "## 🔄 Sincronización EC2" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Host:** ${{ env.EC2_HOST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ruta:** ${{ env.PROJECT_PATH }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # JOB 3: DESPLIEGUE EN CLOUDFLARE (Solo si sincronización pasa)
+  # ═══════════════════════════════════════════════════════════════════════
+  deploy:
+    name: "🚀 Despliegue Cloudflare Workers"
+    needs: sync-ec2
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📦 Instalar Wrangler
+        run: npm install -g wrangler
+
+      - name: 🚀 Desplegar Backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "🚀 Desplegando Backend..."
+          cd augeborg-backend
+          wrangler deploy
+          cd ..
+
+      - name: 🚀 Desplegar Frontend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "🚀 Desplegando Frontend..."
+          cd augeborg-frontend
+          wrangler deploy
+          cd ..
+
+      - name: 🏥 Health Check
+        run: |
+          echo "🏥 Verificando salud de los servicios..."
+          sleep 10
+
+          BACKEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://augeborg-backend.marketceogjr.workers.dev/ || echo "000")
+          FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://augeborg-frontend.marketceogjr.workers.dev/ || echo "000")
+
+          echo "## 🏥 Health Check" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Servicio | URL | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | https://augeborg-backend.marketceogjr.workers.dev/ | $BACKEND_STATUS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | https://augeborg-frontend.marketceogjr.workers.dev/ | $FRONTEND_STATUS |" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$BACKEND_STATUS" != "200" && "$BACKEND_STATUS" != "404" ]]; then
+            echo "⚠️ Backend no responde correctamente"
+          fi
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # JOB 4: MONITOREO POST-DEPLOY
+  # ═══════════════════════════════════════════════════════════════════════
+  monitor:
+    name: "📊 Monitoreo Post-Deploy"
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⏱️ Esperar propagación
+        run: sleep 30
+
+      - name: 📊 Capturar métricas
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "📊 Recopilando métricas de despliegue..."
+
+          # Simulación de captura de logs (wrangler tail requiere sesión interactiva)
+          echo "## 📊 Métricas Post-Deploy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Actor:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🔔 Notificar estado final
+        if: always()
+        run: |
+          echo "## ✅ Pipeline Completado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "El flujo de CI/CD ha finalizado con estado: **${{ job.status }}**" >> $GITHUB_STEP_SUMMARY

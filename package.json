@@ -1,0 +1,21 @@
+{
+  "name": "aws-borg",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "workspaces": ["augeborg-frontend", "augeborg-backend", "augeborg-worker"],
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OGJRx/awsborg.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/OGJRx/awsborg/issues"
+  },
+  "homepage": "https://github.com/OGJRx/awsborg#readme"
+}

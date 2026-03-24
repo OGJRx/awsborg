@@ -1,0 +1,13 @@
+name = "augeborg-worker"
+main = "src/index.ts"
+compatibility_date = "2024-03-18"
+
+# Variables de entorno (configurar via wrangler secret o dashboard)
+# wrangler secret put TELEGRAM_TOKEN
+# wrangler secret put GEMINI_API_KEY
+# wrangler secret put LLAMA_URL
+
+[[d1_databases]]
+binding = "DB"
+database_name = "research-bot-db"
+database_id = "3864ce7f-9d0f-45f4-b3e6-7e4722d353c6"

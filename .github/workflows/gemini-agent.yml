@@ -1,0 +1,18 @@
+name: 🔀 AugeBorg Gemini Agent
+
+on:
+  pull_request:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+jobs:
+  invoke:
+    if: contains(github.event.comment.body, '@gemini-cli') || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧠 Run Gemini Analysis
+        uses: google-github-actions/run-gemini-cli@v0
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          prompt: "Eres el Arquitecto de AugeBorg. Analiza este cambio y verifica que no rompa la ZRAM ni el budget de 1GB de RAM."

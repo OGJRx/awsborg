@@ -1,0 +1,128 @@
+name: "📊 Monitoreo Continuo - AUGEBORG"
+
+on:
+  schedule:
+    # Cada 15 minutos
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duración del monitoreo (segundos)'
+        required: false
+        default: '300'
+
+jobs:
+  health-check:
+    name: "🏥 Health Check"
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🏥 Verificar Backend
+        id: backend
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" https://augeborg-backend.marketceogjr.workers.dev/ || echo -e "\n000")
+          STATUS=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "### Backend Status: $STATUS" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$STATUS" != "200" && "$STATUS" != "404" ]]; then
+            echo "⚠️ Backend posiblemente degradado"
+            exit 0  # No fallar el workflow, solo reportar
+          fi
+
+      - name: 🏥 Verificar Frontend
+        id: frontend
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" https://augeborg-frontend.marketceogjr.workers.dev/ || echo -e "\n000")
+          STATUS=$(echo "$RESPONSE" | tail -1)
+
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "### Frontend Status: $STATUS" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$STATUS" != "200" && "$STATUS" != "404" ]]; then
+            echo "⚠️ Frontend posiblemente degradado"
+          fi
+
+      - name: 🏥 Verificar EC2 Sentinel
+        id: ec2
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" --connect-timeout 5 http://18.222.255.81:3000/health 2>/dev/null || echo -e "\n000")
+          STATUS=$(echo "$RESPONSE" | tail -1)
+
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "### EC2 Sentinel Status: $STATUS" >> $GITHUB_STEP_SUMMARY
+
+      - name: 📊 Generar Reporte
+        run: |
+          echo "## 📊 Reporte de Salud - $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Servicio | URL | Estado |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | augeborg-backend.marketceogjr.workers.dev | ${{ steps.backend.outputs.status || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | augeborg-frontend.marketceogjr.workers.dev | ${{ steps.frontend.outputs.status || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| EC2 Sentinel | 18.222.255.81:3000 | ${{ steps.ec2.outputs.status || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # SINCRONIZACIÓN DE LOGS
+  # ═══════════════════════════════════════════════════════════════════════
+  sync-logs:
+    name: "📋 Sincronización de Logs"
+    needs: health-check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📋 Recopilar métricas
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "📋 Recopilando métricas de Cloudflare Workers..."
+
+          # Crear directorio de logs
+          mkdir -p logs
+
+          # Timestamp
+          TIMESTAMP=$(date -u '+%Y%m%d_%H%M%S')
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+
+          # Guardar estado
+          echo "## 📋 Logs Sincronizados - $TIMESTAMP" > logs/report_${TIMESTAMP}.md
+          echo "" >> logs/report_${TIMESTAMP}.md
+          echo "- **Health Check:** Completado" >> logs/report_${TIMESTAMP}.md
+          echo "- **Backend:** https://augeborg-backend.marketceogjr.workers.dev/" >> logs/report_${TIMESTAMP}.md
+          echo "- **Frontend:** https://augeborg-frontend.marketceogjr.workers.dev/" >> logs/report_${TIMESTAMP}.md
+
+      - name: 📦 Archivar logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-logs-${{ env.TIMESTAMP }}
+          path: logs/
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # ALERTAS (Si hay degradación)
+  # ═══════════════════════════════════════════════════════════════════════
+  alert:
+    name: "🚨 Alertas"
+    needs: health-check
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: 🚨 Generar Alerta
+        run: |
+          echo "## 🚨 ALERTA: Servicio Degradado" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Uno o más servicios no responden correctamente." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Requiere intervención manual.**" >> $GITHUB_STEP_SUMMARY
+
+      # Opcional: Enviar notificación a Telegram
+      - name: 📱 Notificar a Telegram (Opcional)
+        if: ${{ secrets.TELEGRAM_BOT_TOKEN && secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="🚨 AUGEBORG: Servicio degradado detectado. Revisar GitHub Actions."

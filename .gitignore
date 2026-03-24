@@ -1,0 +1,10 @@
+node_modules
+dist
+.wrangler
+.dev.vars
+.DS_Store
+*.pem
+logs.json
+augeborg-worker/node_modules
+augeborg-worker/dist
+augeborg-worker/.wrangler
