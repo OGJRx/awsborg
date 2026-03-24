@@ -1,0 +1,103 @@
+name: 📡 Wrangler Logs Monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duración del monitoreo (minutos)'
+        required: true
+        default: '9'
+        type: choice
+        options:
+          - '1'
+          - '3'
+          - '5'
+          - '9'
+          - '15'
+      format:
+        description: 'Formato de salida'
+        required: true
+        default: 'json'
+        type: choice
+        options:
+          - 'json'
+          - 'pretty'
+
+env:
+  CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
+  CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+
+jobs:
+  capture-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Create logs directory
+        run: mkdir -p logs
+
+      - name: Start log capture
+        run: |
+          DURATION=${{ github.event.inputs.duration }}
+          FORMAT=${{ github.event.inputs.format }}
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          LOG_FILE="logs/worker-${TIMESTAMP}.log"
+
+          echo "📊 Capturando logs por ${DURATION} minutos..."
+          echo "📁 Archivo: ${LOG_FILE}"
+
+          # Run wrangler tail with timeout
+          timeout ${DURATION}m wrangler tail augeborg-worker --format ${FORMAT} > ${LOG_FILE} 2>&1 || true
+
+          echo "LOG_FILE=${LOG_FILE}" >> $GITHUB_ENV
+          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_ENV
+
+      - name: Analyze logs
+        run: |
+          if [ -f "${{ env.LOG_FILE }}" ]; then
+            echo "📊 Estadísticas de logs:"
+            echo ""
+
+            # Count total lines
+            TOTAL=$(wc -l < "${{ env.LOG_FILE }}")
+            echo "Total líneas: ${TOTAL}"
+
+            # Count errors
+            ERRORS=$(grep -c '"error"' "${{ env.LOG_FILE }}" 2>/dev/null || echo "0")
+            echo "Errores: ${ERRORS}"
+
+            # Count requests
+            REQUESTS=$(grep -c '"request"' "${{ env.LOG_FILE }}" 2>/dev/null || echo "0")
+            echo "Requests: ${REQUESTS}"
+
+            # Show last 20 lines
+            echo ""
+            echo "📜 Últimas 20 líneas:"
+            tail -20 "${{ env.LOG_FILE }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ env.TIMESTAMP }}
+          path: logs/
+          retention-days: 30
+
+      - name: Commit logs to repo
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add logs/ || true
+          git commit -m "logs: capture ${{ github.event.inputs.duration }}min - ${{ env.TIMESTAMP }}" || true
+          git push || true

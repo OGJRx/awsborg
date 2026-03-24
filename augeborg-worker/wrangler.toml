@@ -2,12 +2,14 @@ name = "augeborg-worker"
 main = "src/index.ts"
 compatibility_date = "2024-03-18"
 
-# Variables de entorno (configurar via wrangler secret o dashboard)
-# wrangler secret put TELEGRAM_TOKEN
-# wrangler secret put GEMINI_API_KEY
-# wrangler secret put LLAMA_URL
+# Secrets (configurar via: wrangler secret put <NAME>)
+# - TELEGRAM_TOKEN: Bot token de @BotFather
+# - GEMINI_API_KEY: API key de Google AI Studio
+# - LLAMA_URL: URL del túnel cloudflared (se actualiza automáticamente)
+# - GH_PAT: GitHub Personal Access Token con permisos 'codespace'
 
 [[d1_databases]]
 binding = "DB"
 database_name = "research-bot-db"
 database_id = "3864ce7f-9d0f-45f4-b3e6-7e4722d353c6"
+migrations_dir = "migrations"
