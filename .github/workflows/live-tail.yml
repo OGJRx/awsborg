@@ -1,0 +1,337 @@
+name: 📡 Live Tail - Cloudflare Worker Monitor
+
+# ============================================================================
+# WORKFLOW: Monitoreo en vivo de Workers de Cloudflare
+#
+# USO: GitHub Actions → Run workflow → Seleccionar parámetros
+#
+# REQUISITOS (Secrets en Settings → Secrets and variables → Actions):
+#   - CLOUDFLARE_API_TOKEN: Token con permisos de Workers Tail
+#   - CLOUDFLARE_EMAIL: Email de la cuenta Cloudflare
+#   - CLOUDFLARE_ACCOUNT_ID: ID de la cuenta Cloudflare
+#
+# CREAR TOKEN: Cloudflare Dashboard → My Profile → API Tokens
+#   Permisos necesarios: Account → Workers Tail → Read
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duración del monitoreo (segundos)'
+        required: true
+        default: '60'
+        type: choice
+        options:
+          - '30'
+          - '60'
+          - '120'
+          - '180'
+          - '300'
+          - '540'
+          - '900'
+      worker:
+        description: 'Worker a monitorear'
+        required: true
+        default: 'augeborg-worker'
+        type: choice
+        options:
+          - 'augeborg-worker'
+          - 'borg-backend'
+          - 'borg-frontend'
+          - 'all'
+      format:
+        description: 'Formato de logs'
+        required: true
+        default: 'json'
+        type: choice
+        options:
+          - 'json'
+          - 'pretty'
+      status_only:
+        description: 'Solo mostrar estado (sin captura)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  # =========================================================================
+  # JOB 1: Verificar configuración y estado del Worker
+  # =========================================================================
+  pre-check:
+    name: 🔍 Pre-flight Check
+    runs-on: ubuntu-latest
+    outputs:
+      worker_status: ${{ steps.check.outputs.status }}
+      worker_url: ${{ steps.check.outputs.url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Verify secrets
+        run: |
+          echo "🔑 Verificando secrets..."
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "❌ CLOUDFLARE_API_TOKEN no configurado"
+            exit 1
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "❌ CLOUDFLARE_ACCOUNT_ID no configurado"
+            exit 1
+          fi
+          echo "✅ Secrets verificados"
+
+      - name: Check Worker status
+        id: check
+        run: |
+          WORKER="${{ github.event.inputs.worker }}"
+
+          if [ "$WORKER" = "all" ]; then
+            echo "📊 Verificando todos los Workers..."
+            for w in augeborg-worker borg-backend borg-frontend; do
+              STATUS=$(curl -s -X GET \
+                "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/workers/scripts/$w" \
+                -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+                -H "Content-Type: application/json" | jq -r '.success // false')
+
+              if [ "$STATUS" = "true" ]; then
+                echo "  ✅ $w: Activo"
+              else
+                echo "  ⚠️ $w: No encontrado o error"
+              fi
+            done
+            echo "status=mixed" >> $GITHUB_OUTPUT
+            echo "url=multiple" >> $GITHUB_OUTPUT
+          else
+            echo "📊 Verificando $WORKER..."
+
+            RESPONSE=$(curl -s -X GET \
+              "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/workers/scripts/$WORKER" \
+              -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              -H "Content-Type: application/json")
+
+            SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+
+            if [ "$SUCCESS" = "true" ]; then
+              echo "✅ $WORKER está activo"
+              echo "status=active" >> $GITHUB_OUTPUT
+              echo "url=https://$WORKER.${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.workers.dev" >> $GITHUB_OUTPUT
+            else
+              echo "❌ $WORKER no encontrado"
+              echo "status=not_found" >> $GITHUB_OUTPUT
+              echo "url=none" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  # =========================================================================
+  # JOB 2: Captura de logs en vivo
+  # =========================================================================
+  live-tail:
+    name: 📡 Live Tail Capture
+    runs-on: ubuntu-latest
+    needs: pre-check
+    if: github.event.inputs.status_only != 'true'
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Create logs directory
+        run: mkdir -p logs
+
+      - name: Start live tail capture
+        id: capture
+        run: |
+          DURATION="${{ github.event.inputs.duration }}"
+          WORKER="${{ github.event.inputs.worker }}"
+          FORMAT="${{ github.event.inputs.format }}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          LOG_DIR="logs"
+
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║         📡 LIVE TAIL - CLOUDFLARE WORKER MONITOR             ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "  📊 Worker: $WORKER"
+          echo "  ⏱️  Duración: ${DURATION}s"
+          echo "  📝 Formato: $FORMAT"
+          echo "  🕐 Timestamp: $TIMESTAMP"
+          echo ""
+
+          # Configurar wrangler
+          mkdir -p ~/.wrangler
+          cat > ~/.wrangler/config/default.toml << EOF
+          [account]
+          id = "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
+          EOF
+
+          if [ "$WORKER" = "all" ]; then
+            # Capturar de todos los workers
+            for w in augeborg-worker borg-backend borg-frontend; do
+              LOG_FILE="$LOG_DIR/${w}_${TIMESTAMP}.log"
+              echo "📡 Iniciando tail para $w..."
+
+              timeout ${DURATION}s wrangler tail $w --format $FORMAT > "$LOG_FILE" 2>&1 &
+              echo "PID_$w=$!" >> /tmp/tail_pids.txt
+            done
+
+            echo "⏳ Capturando logs por ${DURATION}s..."
+            sleep $DURATION
+
+          else
+            LOG_FILE="$LOG_DIR/${WORKER}_${TIMESTAMP}.log"
+            echo "📡 Iniciando tail para $WORKER..."
+            echo "📁 Archivo: $LOG_FILE"
+            echo ""
+            echo "══════════════════════════════════════════════════════════════"
+            echo "                    LIVE LOG OUTPUT"
+            echo "══════════════════════════════════════════════════════════════"
+
+            # Capturar logs con timeout
+            timeout ${DURATION}s wrangler tail $WORKER --format $FORMAT 2>&1 | tee "$LOG_FILE" &
+
+            # Mostrar progreso
+            TAIL_PID=$!
+            ELAPSED=0
+            while kill -0 $TAIL_PID 2>/dev/null; do
+              sleep 5
+              ELAPSED=$((ELAPSED + 5))
+              echo "⏳ Transcurrido: ${ELAPSED}s / ${DURATION}s"
+            done
+
+            echo ""
+            echo "══════════════════════════════════════════════════════════════"
+            echo "✅ Captura completada"
+          fi
+
+          echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
+          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+          echo "WORKER=$WORKER" >> $GITHUB_ENV
+
+      - name: Analyze logs
+        id: analyze
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    📊 LOG ANALYSIS                           ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          for LOG_FILE in logs/*.log; do
+            if [ -f "$LOG_FILE" ]; then
+              WORKER_NAME=$(basename "$LOG_FILE" .log | cut -d'_' -f1-2)
+              echo "📁 Analizando: $LOG_FILE"
+              echo ""
+
+              # Estadísticas
+              TOTAL_LINES=$(wc -l < "$LOG_FILE" 2>/dev/null || echo "0")
+              ERRORS=$(grep -c '"error"\|"Error"\|ERROR' "$LOG_FILE" 2>/dev/null || echo "0")
+              REQUESTS=$(grep -c '"request"\|"method"' "$LOG_FILE" 2>/dev/null || echo "0")
+              EXCEPTIONS=$(grep -c '"exception"\|"outcome":"exception"' "$LOG_FILE" 2>/dev/null || echo "0")
+
+              echo "  📊 Estadísticas:"
+              echo "     Total líneas: $TOTAL_LINES"
+              echo "     Requests: $REQUESTS"
+              echo "     Errores: $ERRORS"
+              echo "     Excepciones: $EXCEPTIONS"
+              echo ""
+
+              # Si hay errores, mostrarlos
+              if [ "$ERRORS" -gt 0 ]; then
+                echo "  ❌ Últimos errores encontrados:"
+                grep -E '"error"|"Error"|ERROR' "$LOG_FILE" | tail -5 | head -c 2000
+                echo ""
+              fi
+
+              echo "  ─────────────────────────────────────────────────────────"
+              echo ""
+            fi
+          done
+
+          # Guardar métricas para summary
+          echo "total_lines=$TOTAL_LINES" >> $GITHUB_OUTPUT
+          echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+          echo "requests=$REQUESTS" >> $GITHUB_OUTPUT
+
+      - name: Upload logs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-tail-${{ env.TIMESTAMP }}
+          path: logs/
+          retention-days: 30
+          compression-level: 9
+
+      - name: Commit logs to repository
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Crear directorio de historial si no existe
+          mkdir -p .logs-history
+
+          # Mover logs con timestamp
+          for f in logs/*.log; do
+            if [ -f "$f" ]; then
+              cp "$f" ".logs-history/$(basename $f)"
+            fi
+          done
+
+          git add .logs-history/ || true
+          git commit -m "logs: live-tail capture ${{ env.WORKER }} - ${{ env.TIMESTAMP }}" || true
+          git push || echo "No changes to commit"
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    ✅ CAPTURA COMPLETADA                     ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "  📁 Artifact: live-tail-${{ env.TIMESTAMP }}"
+          echo "  📊 Logs guardados en: .logs-history/"
+          echo "  🔗 Descarga desde: Actions → Artifacts"
+          echo ""
+
+  # =========================================================================
+  # JOB 3: Status only (sin captura)
+  # =========================================================================
+  status-only:
+    name: 📊 Status Check
+    runs-on: ubuntu-latest
+    needs: pre-check
+    if: github.event.inputs.status_only == 'true'
+
+    steps:
+      - name: Display status
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    📊 WORKER STATUS                          ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "  Worker: ${{ needs.pre-check.outputs.worker_status }}"
+          echo "  URL: ${{ needs.pre-check.outputs.worker_url }}"
+          echo ""

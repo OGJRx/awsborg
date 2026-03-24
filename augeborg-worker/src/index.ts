@@ -1,10 +1,11 @@
 import { Bot, InlineKeyboard } from "grammy";
+import { GoogleGenAI } from "@google/genai";
 
 interface Env {
   TELEGRAM_TOKEN: string;
   GEMINI_API_KEY: string;
   LLAMA_URL: string;
-  GH_PAT: string; // GitHub Personal Access Token for Codespace control
+  GH_PAT: string;
   DB: D1Database;
 }
 
@@ -12,14 +13,6 @@ interface LlamaResponse {
   content: string;
   tokens_predicted: number;
   model: string;
-}
-
-interface GeminiResponse {
-  candidates: Array<{
-    content: {
-      parts: Array<{ text: string }>;
-    };
-  }>;
 }
 
 interface CodespaceStatus {
@@ -46,8 +39,7 @@ async function getCodespaceStatus(token: string): Promise<CodespaceStatus> {
     throw new Error(`GitHub API error: ${response.status}`);
   }
 
-  const data = await response.json() as CodespaceStatus;
-  return data;
+  return await response.json() as CodespaceStatus;
 }
 
 async function wakeCodespace(token: string): Promise<{ success: boolean; state: string }> {
@@ -82,8 +74,41 @@ async function checkLLMHealth(llamaUrl: string): Promise<boolean> {
   }
 }
 
-// ============ GEMINI API ============
+// ============ GEMINI API v1.46.0 (2026) ============
 async function callGemini(apiKey: string, prompt: string, history: Array<{role: string, text: string}> = []): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey });
+
+  // Construir historial de chat
+  const chatHistory = history.map(h => ({
+    role: h.role === 'user' ? 'user' : 'model',
+    parts: [{ text: h.text }]
+  }));
+
+  try {
+    // Usar Gemini 3.1 Flash Lite Preview si está disponible, sino 2.0 Flash
+    const model = ai.getGenerativeModel({
+      model: 'gemini-2.0-flash-exp' // Cambiar a gemini-3.1-flash-lite-preview cuando esté disponible
+    });
+
+    const chat = model.startChat({
+      history: chatHistory,
+      generationConfig: {
+        maxOutputTokens: 1024,
+        temperature: 0.8,
+      }
+    });
+
+    const result = await chat.sendMessage(prompt);
+    return result.response.text() || "(sin respuesta)";
+  } catch (e) {
+    // Fallback a REST API si el SDK falla
+    console.error("SDK error, falling back to REST:", e);
+    return await callGeminiREST(apiKey, prompt, history);
+  }
+}
+
+// Fallback REST API
+async function callGeminiREST(apiKey: string, prompt: string, history: Array<{role: string, text: string}> = []): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`;
 
   const contents = history.map(h => ({
@@ -106,7 +131,7 @@ async function callGemini(apiKey: string, prompt: string, history: Array<{role: 
     throw new Error(`Gemini API error: ${response.status}`);
   }
 
-  const data = await response.json() as GeminiResponse;
+  const data = await response.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text || "(sin respuesta)";
 }
 
@@ -176,7 +201,6 @@ export default {
 
     // ===== DASHBOARD /start =====
     bot.command("start", async (ctx) => {
-      // Limpiar sesión previa
       await endSession(env.DB, ctx.chat!.id);
 
       const keyboard = new InlineKeyboard()
@@ -187,11 +211,11 @@ export default {
         .text("⚡ Wake Codespace", "action:wake");
 
       await ctx.reply(
-        "🏛️ **BORGPTRON TITANIUMCORE v2.0**\n\n" +
+        "🏛️ **BORGPTRON TITANIUMCORE v2.1**\n\n" +
         "Selecciona un modelo de IA para iniciar conversación:\n\n" +
-        "• **Gemini**: Rápido, en la nube\n" +
-        "• **Local**: Qwen3.5-4B sin censura\n\n" +
-        "_Tu conversación se mantendrá hasta que cambies de modelo o uses /start_",
+        "• **Gemini 2.0 Flash**: Rápido, en la nube\n" +
+        "• **Local Qwen3.5-4B**: Sin censura, en Codespace\n\n" +
+        "_Tu conversación se mantendrá hasta que cambies de modelo_",
         {
           parse_mode: "Markdown",
           reply_markup: keyboard
@@ -207,7 +231,6 @@ export default {
       await ctx.answerCallbackQuery();
 
       if (model === 'local') {
-        // Verificar Codespace
         const statusMsg = await ctx.editMessageText("🔍 Verificando Codespace...");
 
         try {
@@ -217,7 +240,7 @@ export default {
             await ctx.api.editMessageText(
               chatId,
               statusMsg.message_id,
-              "⏳ Codespace dormido. Reactivando... (esto tomará ~2 min)"
+              "⏳ Codespace dormido. Reactivando... (~2 min)"
             );
 
             const wakeResult = await wakeCodespace(env.GH_PAT);
@@ -226,19 +249,17 @@ export default {
               await ctx.api.editMessageText(
                 chatId,
                 statusMsg.message_id,
-                "❌ Error al reactivar Codespace. Intenta con '⚡ Wake Codespace'"
+                "❌ Error al reactivar. Usa '⚡ Wake Codespace'"
               );
               return;
             }
 
-            // Esperar a que el LLM esté listo
             await ctx.api.editMessageText(
               chatId,
               statusMsg.message_id,
               "⏳ Codespace activo. Esperando LLM..."
             );
 
-            // Poll por hasta 3 minutos
             let llmReady = false;
             for (let i = 0; i < 36; i++) {
               await new Promise(r => setTimeout(r, 5000));
@@ -252,19 +273,18 @@ export default {
               await ctx.api.editMessageText(
                 chatId,
                 statusMsg.message_id,
-                "⚠️ Codespace activo pero LLM no responde.\n\nEjecuta ./start-frankenstein.sh en el Codespace."
+                "⚠️ LLM no responde. Ejecuta ./start-frankenstein.sh en Codespace."
               );
               return;
             }
           }
 
-          // Verificar LLM
           const llmOk = await checkLLMHealth(env.LLAMA_URL);
           if (!llmOk) {
             await ctx.api.editMessageText(
               chatId,
               statusMsg.message_id,
-              "⚠️ Codespace activo pero LLM no responde.\n\nEjecuta ./start-frankenstein.sh en el Codespace."
+              "⚠️ LLM no responde. Ejecuta ./start-frankenstein.sh"
             );
             return;
           }
@@ -277,7 +297,6 @@ export default {
           return;
         }
 
-        // Crear sesión
         await createSession(env.DB, chatId, 'local');
 
         await ctx.api.editMessageText(
@@ -285,20 +304,17 @@ export default {
           statusMsg.message_id,
           "🖥️ **LLM Local Conectado**\n\n" +
           "_Qwen3.5-4B-Uncensored_\n\n" +
-          "Escribe tu mensaje para iniciar la conversación.\n" +
-          "Usa /start para volver al menú.",
+          "Escribe tu mensaje. Usa /start para volver.",
           { parse_mode: "Markdown" }
         );
 
       } else if (model === 'gemini') {
-        // Crear sesión Gemini
         await createSession(env.DB, chatId, 'gemini');
 
         await ctx.editMessageText(
           "🌐 **Gemini Conectado**\n\n" +
-          "_Gemini 2.0 Flash_\n\n" +
-          "Escribe tu mensaje para iniciar la conversación.\n" +
-          "Usa /start para volver al menú.",
+          "_Gemini 2.0 Flash Exp_\n\n" +
+          "Escribe tu mensaje. Usa /start para volver.",
           { parse_mode: "Markdown" }
         );
       }
@@ -338,7 +354,7 @@ export default {
     });
 
     bot.callbackQuery("action:wake", async (ctx) => {
-      await ctx.answerCallbackQuery("Reactivando Codespace...");
+      await ctx.answerCallbackQuery("Reactivando...");
 
       try {
         const result = await wakeCodespace(env.GH_PAT);
@@ -347,14 +363,12 @@ export default {
           await ctx.editMessageText(
             "⚡ **Codespace Reactivado**\n\n" +
             `Estado: ${result.state}\n\n` +
-            "Espera ~2 minutos antes de usar el LLM Local.\n" +
-            "Usa /start para volver al menú.",
+            "Espera ~2 min antes de usar el LLM Local.",
             { parse_mode: "Markdown" }
           );
         } else {
           await ctx.editMessageText(
-            "❌ Error al reactivar Codespace.\n\n" +
-            "Verifica que el token GH_PAT tenga permisos de `codespace`.",
+            "❌ Error al reactivar. Verifica GH_PAT.",
             { parse_mode: "Markdown" }
           );
         }
@@ -371,33 +385,27 @@ export default {
       const chatId = ctx.chat!.id;
       const text = ctx.message.text;
 
-      // Ignorar comandos
       if (text.startsWith("/")) return;
 
-      // Obtener sesión activa
       const session = await getSession(env.DB, chatId);
 
       if (!session || session.active !== 1) {
         await ctx.reply(
-          "⚠️ No tienes una sesión activa.\n\n" +
-          "Usa /start para seleccionar un modelo.",
+          "⚠️ No tienes sesión activa.\n\nUsa /start para seleccionar modelo.",
           { parse_mode: "Markdown" }
         );
         return;
       }
 
-      // Guardar mensaje del usuario
       await saveMessage(env.DB, chatId, 'user', text);
 
       if (session.model === 'gemini') {
-        // === GEMINI ===
-        const statusMsg = await ctx.reply("🌐 Procesando...");
+        const statusMsg = await ctx.reply("🌐 Procesando con Gemini...");
 
         try {
           const history = await getHistory(env.DB, chatId, 10);
           const response = await callGemini(env.GEMINI_API_KEY, text, history);
 
-          // Guardar respuesta
           await saveMessage(env.DB, chatId, 'assistant', response);
 
           await ctx.api.editMessageText(
@@ -415,25 +423,20 @@ export default {
         }
 
       } else if (session.model === 'local') {
-        // === LOCAL LLM ===
         const statusMsg = await ctx.reply("🧠 Procesando con Qwen3.5-4B...");
 
-        // Verificar que el LLM esté disponible
         const llmOk = await checkLLMHealth(env.LLAMA_URL);
         if (!llmOk) {
-          // Intentar wake
           await ctx.api.editMessageText(
             chatId,
             statusMsg.message_id,
-            "⏳ LLM no disponible. Verificando Codespace..."
+            "⏳ LLM no disponible. Verificando..."
           );
 
           const csStatus = await getCodespaceStatus(env.GH_PAT);
 
           if (csStatus.state === 'Shutdown') {
             await wakeCodespace(env.GH_PAT);
-
-            // Esperar
             for (let i = 0; i < 36; i++) {
               await new Promise(r => setTimeout(r, 5000));
               if (await checkLLMHealth(env.LLAMA_URL)) break;
@@ -442,7 +445,6 @@ export default {
         }
 
         try {
-          // Construir contexto con historial
           const history = await getHistory(env.DB, chatId, 5);
           const contextPrompt = history.length > 0
             ? history.map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n') + `\nUser: ${text}`
@@ -451,7 +453,6 @@ export default {
           const result = await callLlama(env.LLAMA_URL, contextPrompt);
           const response = result.content || "(sin respuesta)";
 
-          // Guardar respuesta
           await saveMessage(env.DB, chatId, 'assistant', response);
 
           await ctx.api.editMessageText(
@@ -465,7 +466,7 @@ export default {
             chatId,
             statusMsg.message_id,
             `❌ Error: ${e instanceof Error ? e.message : 'desconocido'}\n\n` +
-            "¿El Codespace está activo? ¿El túnel cloudflared está corriendo?"
+            "¿Codespace activo? ¿Túnel corriendo?"
           );
         }
       }
@@ -474,14 +475,14 @@ export default {
     // ===== COMANDOS ADICIONALES =====
     bot.command("end", async (ctx) => {
       await endSession(env.DB, ctx.chat!.id);
-      await ctx.reply("✅ Sesión terminada. Usa /start para iniciar una nueva.");
+      await ctx.reply("✅ Sesión terminada. Usa /start para nueva sesión.");
     });
 
     bot.command("history", async (ctx) => {
       const history = await getHistory(env.DB, ctx.chat!.id, 10);
 
       if (history.length === 0) {
-        await ctx.reply("📭 No hay mensajes en el historial.");
+        await ctx.reply("📭 No hay mensajes en historial.");
         return;
       }
 
@@ -489,7 +490,7 @@ export default {
         `**${h.role === 'user' ? '👤 Tú' : '🤖 IA'}**: ${h.content.substring(0, 100)}...`
       ).join('\n\n');
 
-      await ctx.reply(`📜 **Últimos mensajes**:\n\n${formatted}`, { parse_mode: "Markdown" });
+      await ctx.reply(`📜 **Historial**:\n\n${formatted}`, { parse_mode: "Markdown" });
     });
 
     // ===== HANDLE WEBHOOK =====
@@ -508,7 +509,6 @@ export default {
   },
 };
 
-// Extend grammy context
 declare module "grammy" {
   interface ContextFlavor {
     env: Env;
