@@ -1,0 +1,198 @@
+# ============================================================
+# FRANKENSTEIN WAKE CODESPACE - GitHub Actions
+# ============================================================
+# Micro-pasos 29-32: Reactivar Codespace remotamente
+# Trigger manual o automático cuando se detecta inactividad
+# ============================================================
+
+name: ⚡ Wake Codespace
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait_for_llm:
+        description: 'Esperar a que el LLM esté listo'
+        required: false
+        default: 'true'
+        type: boolean
+      timeout:
+        description: 'Timeout en minutos (1-10)'
+        required: false
+        default: '5'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+          - '10'
+
+env:
+  CODESPACE_NAME: "redesigned-space-giggle-r479rw76gq57fjq6"
+
+jobs:
+  # ============================================================
+  # MICRO-PASO 29: Check Current State
+  # ============================================================
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_wake: ${{ steps.status.outputs.needs_wake }}
+      current_state: ${{ steps.status.outputs.state }}
+    steps:
+      - name: 🔍 Check Codespace State
+        id: status
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Checking Codespace state..."
+          
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/user/codespaces/${{ env.CODESPACE_NAME }}")
+          
+          STATE=$(echo "$RESPONSE" | jq -r '.state // "unknown"')
+          
+          echo "state=$STATE" >> $GITHUB_OUTPUT
+          
+          if [ "$STATE" = "Shutdown" ] || [ "$STATE" = "Unavailable" ]; then
+            echo "needs_wake=true" >> $GITHUB_OUTPUT
+            echo "🔴 Codespace is $STATE - needs wake"
+          else
+            echo "needs_wake=false" >> $GITHUB_OUTPUT
+            echo "🟢 Codespace is $STATE - no wake needed"
+          fi
+
+  # ============================================================
+  # MICRO-PASO 30: Wake Codespace
+  # ============================================================
+  wake:
+    needs: check
+    if: needs.check.outputs.needs_wake == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⚡ Starting Codespace
+        id: wake
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Waking up Codespace..."
+          
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/user/codespaces/${{ env.CODESPACE_NAME }}/start")
+          
+          STATE=$(echo "$RESPONSE" | jq -r '.state // "error"')
+          
+          echo "state=$STATE" >> $GITHUB_OUTPUT
+          echo "Codespace state: $STATE"
+          
+          if [ "$STATE" = "Starting" ] || [ "$STATE" = "Available" ]; then
+            echo "✅ Codespace wake initiated"
+          else
+            echo "❌ Failed to wake Codespace"
+            echo "::error::Failed to wake Codespace"
+          fi
+
+      - name: ⏳ Wait for Available State
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          TIMEOUT=${{ github.event.inputs.timeout }}
+          ELAPSED=0
+          
+          echo "Waiting for Codespace to become available (timeout: ${TIMEOUT}min)..."
+          
+          while [ $ELAPSED -lt $((TIMEOUT * 60)) ]; do
+            RESPONSE=$(curl -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/user/codespaces/${{ env.CODESPACE_NAME }}")
+            
+            STATE=$(echo "$RESPONSE" | jq -r '.state // "unknown"')
+            
+            echo "Current state: $STATE (${ELAPSED}s elapsed)"
+            
+            if [ "$STATE" = "Available" ]; then
+              echo "✅ Codespace is now available!"
+              exit 0
+            fi
+            
+            sleep 10
+            ELAPSED=$((ELAPSED + 10))
+          done
+          
+          echo "⚠️ Timeout waiting for Codespace"
+
+  # ============================================================
+  # MICRO-PASO 31-32: Wait for LLM
+  # ============================================================
+  llm-ready:
+    needs: [check, wake]
+    if: github.event.inputs.wait_for_llm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: ⏳ Wait for LLM Server
+        run: |
+          LLAMA_URL="${{ secrets.LLAMA_URL }}"
+          TIMEOUT=${{ github.event.inputs.timeout }}
+          ELAPSED=0
+          
+          echo "Waiting for LLM server at $LLAMA_URL (timeout: ${TIMEOUT}min)..."
+          
+          while [ $ELAPSED -lt $((TIMEOUT * 60)) ]; do
+            if curl -s -o /dev/null -w "%{http_code}" "${LLAMA_URL}/health" --max-time 5 | grep -q "200"; then
+              echo "✅ LLM server is ready!"
+              
+              # Show LLM info
+              LLM_INFO=$(curl -s "${LLAMA_URL}/props" 2>/dev/null || echo "No info available")
+              echo "LLM Info: $LLM_INFO"
+              
+              exit 0
+            fi
+            
+            echo "LLM not ready yet... (${ELAPSED}s elapsed)"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          
+          echo "⚠️ Timeout waiting for LLM"
+          echo "::warning::LLM server did not respond in time"
+
+      - name: ✅ LLM Ready Summary
+        run: |
+          echo "## ⚡ Codespace Wake Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Codespace**: ${{ env.CODESPACE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **LLM Ready**: Checked" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # Summary
+  # ============================================================
+  summary:
+    needs: [check, wake, llm-ready]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📋 Wake Summary
+        run: |
+          echo "## ⚡ FRANKENSTEIN WAKE COMPLETE" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Codespace Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Previous State**: ${{ needs.check.outputs.current_state }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Wake Needed**: ${{ needs.check.outputs.needs_wake }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "🤖 Ready to use LLM via Telegram bot!" >> $GITHUB_STEP_SUMMARY

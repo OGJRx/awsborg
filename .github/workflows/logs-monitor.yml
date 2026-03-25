@@ -1,0 +1,211 @@
+# ============================================================
+# FRANKENSTEIN LOGS MONITOR - GitHub Actions
+# ============================================================
+# Micro-pasos 15-21: Live tail logs en tiempo real
+# Activación MANUAL con tiempo configurable (1-9 minutos)
+# Permite ver logs en crudo de ambos Workers
+# ============================================================
+
+name: 📡 Logs Monitor Live
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Duración del monitoreo (1-9 minutos)'
+        required: true
+        default: '3'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
+          - '9'
+      worker:
+        description: 'Worker a monitorear'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - 'both'
+          - 'borg-admin'
+          - 'borg-client'
+      filter:
+        description: 'Filtro de logs (regex, opcional)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+jobs:
+  # ============================================================
+  # MICRO-PASO 15: Setup y Validación
+  # ============================================================
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      duration_seconds: ${{ steps.calc.outputs.seconds }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: ⏱️ Calcular Duración
+        id: calc
+        run: |
+          MINUTES=${{ github.event.inputs.duration }}
+          SECONDS=$((MINUTES * 60))
+          echo "seconds=$SECONDS" >> $GITHUB_OUTPUT
+          echo "Duración configurada: ${MINUTES} minutos (${SECONDS} segundos)"
+
+      - name: 🔧 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: ✅ Setup Summary
+        run: |
+          echo "## 📡 Logs Monitor Setup" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duración**: ${{ github.event.inputs.duration }} minutos" >> $GITHUB_STEP_SUMMARY
+          echo "- **Worker**: ${{ github.event.inputs.worker }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Filtro**: '${{ github.event.inputs.filter }}'" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 16-17: Live Tail borg-admin
+  # ============================================================
+  logs-admin:
+    needs: setup
+    if: github.event.inputs.worker == 'both' || github.event.inputs.worker == 'borg-admin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: 📡 Live Tail - borg-admin
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          DURATION=${{ needs.setup.outputs.duration_seconds }}
+          FILTER="${{ github.event.inputs.filter }}"
+          
+          echo "=========================================="
+          echo "📡 BORG-ADMIN LIVE TAIL"
+          echo "Duración: ${DURATION}s | Filtro: '${FILTER}'"
+          echo "=========================================="
+          echo ""
+          
+          # Start tail in background
+          if [ -n "$FILTER" ]; then
+            timeout ${DURATION}s wrangler tail borg-admin --format=json 2>&1 | grep --line-buffered -E "$FILTER" &
+          else
+            timeout ${DURATION}s wrangler tail borg-admin --format=pretty 2>&1 &
+          fi
+          
+          TAIL_PID=$!
+          
+          # Wait for duration
+          sleep ${DURATION}
+          
+          # Kill tail process
+          kill $TAIL_PID 2>/dev/null || true
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ Monitoreo borg-admin completado"
+          echo "=========================================="
+
+      - name: 📋 Admin Logs Summary
+        run: |
+          echo "## 📡 borg-admin Logs" >> $GITHUB_STEP_SUMMARY
+          echo "Monitoreo completado: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 18-19: Live Tail borg-client
+  # ============================================================
+  logs-client:
+    needs: setup
+    if: github.event.inputs.worker == 'both' || github.event.inputs.worker == 'borg-client'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: 📡 Live Tail - borg-client
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          DURATION=${{ needs.setup.outputs.duration_seconds }}
+          FILTER="${{ github.event.inputs.filter }}"
+          
+          echo "=========================================="
+          echo "📡 BORG-CLIENT LIVE TAIL"
+          echo "Duración: ${DURATION}s | Filtro: '${FILTER}'"
+          echo "=========================================="
+          echo ""
+          
+          # Start tail in background
+          if [ -n "$FILTER" ]; then
+            timeout ${DURATION}s wrangler tail borg-client --format=json 2>&1 | grep --line-buffered -E "$FILTER" &
+          else
+            timeout ${DURATION}s wrangler tail borg-client --format=pretty 2>&1 &
+          fi
+          
+          TAIL_PID=$!
+          
+          # Wait for duration
+          sleep ${DURATION}
+          
+          # Kill tail process
+          kill $TAIL_PID 2>/dev/null || true
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ Monitoreo borg-client completado"
+          echo "=========================================="
+
+      - name: 📋 Client Logs Summary
+        run: |
+          echo "## 📡 borg-client Logs" >> $GITHUB_STEP_SUMMARY
+          echo "Monitoreo completado: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 20-21: Final Summary
+  # ============================================================
+  summary:
+    needs: [setup, logs-admin, logs-client]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📋 Final Summary
+        run: |
+          echo "## 📡 FRANKENSTEIN LOGS MONITOR COMPLETE" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuración" >> $GITHUB_STEP_SUMMARY
+          echo "- **Duración**: ${{ github.event.inputs.duration }} minutos" >> $GITHUB_STEP_SUMMARY
+          echo "- **Worker(s)**: ${{ github.event.inputs.worker }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Filtro**: '${{ github.event.inputs.filter }}'" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Workers Monitoreados" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.worker }}" == "both" ] || [ "${{ github.event.inputs.worker }}" == "borg-admin" ]; then
+            echo "- ✅ **borg-admin**: Telegram Bot + AI" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ github.event.inputs.worker }}" == "both" ] || [ "${{ github.event.inputs.worker }}" == "borg-client" ]; then
+            echo "- ✅ **borg-client**: Mini App + API" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "🕐 Completado: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "💡 **Tip**: Revisa los logs arriba para ver actividad en tiempo real" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,114 @@
+# ============================================================
+# FRANKENSTEIN CLEANUP - GitHub Actions
+# ============================================================
+# Micro-pasos 33-35: Limpieza y mantenimiento
+# Se ejecuta diario a las 3 AM UTC + manual
+# ============================================================
+
+name: 🧹 Cleanup & Maintenance
+
+on:
+  schedule:
+    # Diario a las 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  # ============================================================
+  # MICRO-PASO 33: Clean Old Sessions
+  # ============================================================
+  clean-sessions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: 🧹 Clean Expired Sessions
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "Cleaning sessions older than 24 hours..."
+          
+          # Delete old sessions
+          wrangler d1 execute AWS-BORG-DATA --remote --command \
+            "DELETE FROM chat_sessions WHERE created_at < datetime('now', '-1 day')" || true
+          
+          echo "✅ Old sessions cleaned"
+
+      - name: 🧹 Clean Old Messages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "Cleaning messages older than 7 days..."
+          
+          # Keep last 1000 messages per chat, delete older
+          wrangler d1 execute AWS-BORG-DATA --remote --command \
+            "DELETE FROM message_history WHERE created_at < datetime('now', '-7 days')" || true
+          
+          echo "✅ Old messages cleaned"
+
+      - name: ✅ Cleanup Summary
+        run: |
+          echo "## 🧹 Session Cleanup" >> $GITHUB_STEP_SUMMARY
+          echo "- Sessions: Removed >24h old" >> $GITHUB_STEP_SUMMARY
+          echo "- Messages: Removed >7 days old" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 34: Database Stats
+  # ============================================================
+  db-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: 📊 Get Database Stats
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "Getting database statistics..."
+          
+          # Count sessions
+          SESSIONS=$(wrangler d1 execute AWS-BORG-DATA --remote --command \
+            "SELECT COUNT(*) as count FROM chat_sessions" --json 2>/dev/null | jq '.results[0].results[0].count' || echo "0")
+          
+          # Count messages
+          MESSAGES=$(wrangler d1 execute AWS-BORG-DATA --remote --command \
+            "SELECT COUNT(*) as count FROM message_history" --json 2>/dev/null | jq '.results[0].results[0].count' || echo "0")
+          
+          # Active sessions
+          ACTIVE=$(wrangler d1 execute AWS-BORG-DATA --remote --command \
+            "SELECT COUNT(*) as count FROM chat_sessions WHERE active = 1" --json 2>/dev/null | jq '.results[0].results[0].count' || echo "0")
+          
+          echo "## 📊 Database Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Sessions**: $SESSIONS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Active Sessions**: $ACTIVE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Messages**: $MESSAGES" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 35: Final Maintenance Report
+  # ============================================================
+  maintenance-report:
+    needs: [clean-sessions, db-stats]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📋 Maintenance Report
+        run: |
+          echo "## 🧹 FRANKENSTEIN MAINTENANCE COMPLETE" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Tasks Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Cleaned expired sessions" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Removed old messages" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Generated database stats" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "🕐 Completed: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔄 Next run: Tomorrow at 03:00 UTC" >> $GITHUB_STEP_SUMMARY

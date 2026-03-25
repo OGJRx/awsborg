@@ -1,116 +1,254 @@
 # 🧠 FRANKENSTEIN ARCHITECTURE
 
-> **$0 Cost LLM-Powered Telegram Bot**
+> **Monorepo Unificado**: Telegram Bot + Mini App + LLM Integration
+> 
+> **Stack**: TypeScript Strict | grammY | Cloudflare Workers | D1 (SQLite) | GitHub Codespaces
 
-Sistema de IA dual que combina Cloudflare Workers (24/7 gratuito) + GitHub Codespaces (LLM efímero) + Telegram.
+---
 
-## 🏗️ Arquitectura
+## 📁 Estructura del Proyecto
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│    TELEGRAM     │────▶│   BORG-ADMIN    │────▶│ GEMINI / LOCAL  │
-│   (Interface)   │     │ (CF Worker 24/7)│     │     (LLM)       │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │
-                               ▼
-                        ┌─────────────────┐
-                        │   BORG-CLIENT   │
-                        │  (Mini App API) │
-                        └─────────────────┘
+awsborg-unified/
+├── .github/workflows/     # CI/CD Automatizado
+│   ├── deploy.yml         # 🚀 Deploy automático
+│   ├── test.yml           # 🧪 Testing automatizado
+│   ├── logs-monitor.yml   # 📡 Live tail logs (1-9 min)
+│   ├── health-check.yml   # 🏥 Health check cada 30 min
+│   ├── wake-codespace.yml # ⚡ Reactivar Codespace
+│   └── cleanup.yml        # 🧹 Limpieza diaria
+├── borg-admin/            # Worker: Telegram Bot + AI Handler
+├── borg-client/           # Worker: Mini App + API REST
+├── codespace/             # Scripts para Codespace LLM
+├── migrations/            # D1 Database migrations
+└── package.json           # Workspaces config
 ```
 
-## 📦 Workers
+---
 
-| Worker | Propósito | Stack |
-|--------|-----------|-------|
-| **borg-admin** | Bot Telegram principal | grammY, D1, Gemini SDK |
-| **borg-client** | Mini App + API REST | Service Binding, D1 |
+## 🔄 GitHub Actions Workflows
+
+### 🚀 Deploy Frankenstein (`deploy.yml`)
+
+**Triggers**: Push a `main` + Manual
+
+**Micro-pasos automatizados**:
+1. Pre-flight checks (detección de cambios)
+2. TypeScript compilation check
+3. Lint y security scan
+4. Deploy borg-admin (paralelo)
+5. Deploy borg-client (paralelo)
+6. D1 Migrations
+7. Telegram Webhook setup
+8. Post-deploy health check
+
+```yaml
+# Trigger manual con opciones
+gh workflow run deploy.yml -f environment=production -f skip_tests=false
+```
+
+---
+
+### 🧪 Test Frankenstein (`test.yml`)
+
+**Triggers**: Push, PR, Manual
+
+**Micro-pasos automatizados**:
+9. Unit tests setup
+10. TypeScript strict check
+11. Code quality analysis
+12. Wrangler config validation
+13. Build test
+14. Integration tests (mock)
+
+```yaml
+# Ejecutar tests manualmente
+gh workflow run test.yml
+```
+
+---
+
+### 📡 Logs Monitor Live (`logs-monitor.yml`)
+
+**Trigger**: **SOLO MANUAL** - Tiempo configurable 1-9 minutos
+
+**Micro-pasos automatizados**:
+15. Setup y validación
+16. Live tail borg-admin
+17. Live tail borg-client
+18. Filtro de logs opcional
+19. Formato pretty/json
+20. Timeout automático
+21. Summary final
+
+```yaml
+# Ejemplos de uso:
+gh workflow run logs-monitor.yml -f duration=5 -f worker=both
+
+# Solo borg-admin por 3 minutos
+gh workflow run logs-monitor.yml -f duration=3 -f worker=borg-admin
+
+# Con filtro de errores
+gh workflow run logs-monitor.yml -f duration=9 -f worker=both -f filter="error|Error|ERROR"
+```
+
+---
+
+### 🏥 Health Check (`health-check.yml`)
+
+**Triggers**: Cada 30 min + Manual
+
+**Micro-pasos automatizados**:
+22. Workers health check
+23. Telegram API health
+24. Codespace status
+25. D1 database health
+26. Webhook verification
+27. Alertas automáticas
+28. Final health report
+
+```yaml
+# Trigger manual con reporte detallado
+gh workflow run health-check.yml -f detailed=true
+```
+
+---
+
+### ⚡ Wake Codespace (`wake-codespace.yml`)
+
+**Trigger**: **SOLO MANUAL**
+
+**Micro-pasos automatizados**:
+29. Check current state
+30. Wake Codespace via API
+31. Wait for available state
+32. Wait for LLM ready
+
+```yaml
+# Reactivar Codespace y esperar LLM
+gh workflow run wake-codespace.yml -f wait_for_llm=true -f timeout=5
+```
+
+---
+
+### 🧹 Cleanup & Maintenance (`cleanup.yml`)
+
+**Triggers**: Diario 3 AM UTC + Manual
+
+**Micro-pasos automatizados**:
+33. Clean old sessions (>24h)
+34. Clean old messages (>7 days)
+35. Database statistics
+
+```yaml
+# Ejecutar limpieza manual
+gh workflow run cleanup.yml
+```
+
+---
+
+## 🔐 Secrets Requeridos
+
+Configurar en GitHub Settings > Secrets and variables > Actions:
+
+| Secret | Descripción |
+|--------|-------------|
+| `CLOUDFLARE_API_TOKEN` | Token de Cloudflare para Workers |
+| `TELEGRAM_TOKEN` | Token del bot de Telegram |
+| `GEMINI_API_KEY` | API Key de Google Gemini |
+| `LLAMA_URL` | URL del túnel del Codespace |
+| `GH_PAT` | GitHub Personal Access Token |
+
+### Configurar Secrets via CLI:
+
+```bash
+# Con gh CLI
+gh secret set CLOUDFLARE_API_TOKEN --body "YOUR_CF_TOKEN"
+gh secret set TELEGRAM_TOKEN --body "YOUR_BOT_TOKEN"
+gh secret set GH_PAT --body "YOUR_GH_PAT"
+gh secret set GEMINI_API_KEY --body "YOUR_GEMINI_KEY"
+gh secret set LLAMA_URL --body "https://YOUR_TUNNEL_URL"
+```
+
+---
 
 ## 🚀 Quick Start
 
+### 1. Clonar y configurar
 ```bash
-# Install dependencies
-npm install
-
-# Deploy workers
-npm run deploy
-
-# Start Codespace LLM (in Codespace)
-./codespace/start-frankenstein.sh
+git clone https://github.com/OGJRx/awsborg.git
+cd awsborg
+npm ci
 ```
 
-## 🔐 Secrets Required
-
+### 2. Configurar secrets en GitHub
 ```bash
-# GitHub Secrets (CI/CD)
-CLOUDFLARE_API_TOKEN=cfut_xxx
-TELEGRAM_TOKEN=123456:ABC
-GEMINI_API_KEY=AIzaxxx
-GH_PAT=ghp_xxx
-LLAMA_URL=https://xxx.trycloudflare.com
-
-# Cloudflare Worker Secrets (borg-admin)
-wrangler secret put TELEGRAM_TOKEN --name borg-admin
-wrangler secret put GEMINI_API_KEY --name borg-admin
-wrangler secret put LLAMA_URL --name borg-admin
-wrangler secret put GH_PAT --name borg-admin
+gh secret set TELEGRAM_TOKEN --body "YOUR_BOT_TOKEN"
+gh secret set CLOUDFLARE_API_TOKEN --body "YOUR_CF_TOKEN"
 ```
 
-## 📁 Estructura
-
-```
-awsborg/
-├── borg-admin/           # Worker: Telegram Bot
-│   ├── src/index.ts
-│   ├── wrangler.toml
-│   └── package.json
-├── borg-client/          # Worker: Mini App
-│   ├── src/index.ts
-│   ├── webapp/index.html
-│   └── wrangler.toml
-├── codespace/            # LLM Scripts
-│   ├── start-frankenstein.sh
-│   └── auto-tunnel-sync.sh
-├── migrations/           # D1 Schema
-└── .github/workflows/    # CI/CD
-```
-
-## ⚠️ PROHIBICIONES
-
-- ❌ NO KV
-- ❌ NO R2
-- ✅ D1 Permitido
-- ✅ Service Bindings Permitido
-
-## 📊 Comandos
-
-| Comando | Descripción |
-|---------|-------------|
-| `/start` | Dashboard con selector de modelo |
-| `/end` | Terminar sesión actual |
-| `/history` | Ver historial de conversación |
-
-## 🔧 Desarrollo
-
+### 3. Push para deploy automático
 ```bash
-# Dev mode (local)
-npm run dev:admin
-npm run dev:client
-
-# Tail logs
-npm run tail
-
-# Database
-npm run db:migrate
+git add . && git commit -m "Deploy" && git push
 ```
 
-## 📈 Estado
+### 4. Verificar deployment
+```bash
+gh run list --limit 5
+```
+
+---
+
+## 📊 Arquitectura
 
 ```
-Progress: 70%
-├── ✅ Infrastructure setup
-├── ✅ Workers desplegados
-├── ✅ Secrets configurados
-├── 🔄 Código unificado
-└── ⏳ Testing pendiente
+┌─────────────────────────────────────────────────────────────┐
+│                     TELEGRAM USER                            │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  borg-admin Worker                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │  grammY Bot  │  │  AI Handler  │  │  D1 Session  │       │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
+│         │                 │                  │               │
+│         ▼                 ▼                  ▼               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │   Gemini     │  │ Local LLM    │  │   D1 DB      │       │
+│  │   (Cloud)    │  │ (Codespace)  │  │ (SQLite)     │       │
+│  └──────────────┘  └──────────────┘  └──────────────┘       │
+└─────────────────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  borg-client Worker                          │
+│  ┌──────────────┐  ┌──────────────┐                         │
+│  │  Mini App    │  │  API REST    │                         │
+│  └──────────────┘  └──────────────┘                         │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## ⚠️ PROHIBITIONS
+
+- ❌ **NO KV** - Solo D1 (SQLite)
+- ❌ **NO R2** - Sin almacenamiento de objetos
+- ✅ **Solo D1** - Base de datos SQLite serverless
+
+---
+
+## 📈 Status Badges
+
+[![Deploy](https://github.com/OGJRx/awsborg/actions/workflows/deploy.yml/badge.svg)](https://github.com/OGJRx/awsborg/actions/workflows/deploy.yml)
+[![Test](https://github.com/OGJRx/awsborg/actions/workflows/test.yml/badge.svg)](https://github.com/OGJRx/awsborg/actions/workflows/test.yml)
+[![Health Check](https://github.com/OGJRx/awsborg/actions/workflows/health-check.yml/badge.svg)](https://github.com/OGJRx/awsborg/actions/workflows/health-check.yml)
+
+---
+
+## 🤖 Bot Info
+
+- **Bot**: @TITANgearbot
+- **Worker**: borg-admin.awsborg.workers.dev
+- **Commands**: `/start`, `/end`, `/history`

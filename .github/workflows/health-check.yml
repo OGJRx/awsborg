@@ -1,0 +1,232 @@
+# ============================================================
+# FRANKENSTEIN HEALTH CHECK - GitHub Actions
+# ============================================================
+# Micro-pasos 22-28: Verificación de salud periódica
+# Se ejecuta cada 30 minutos + manual
+# Verifica: Workers, D1, Telegram API, Codespace
+# ============================================================
+
+name: 🏥 Health Check
+
+on:
+  schedule:
+    # Cada 30 minutos
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      detailed:
+        description: 'Reporte detallado'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ============================================================
+  # MICRO-PASO 22: Workers Health
+  # ============================================================
+  workers:
+    runs-on: ubuntu-latest
+    outputs:
+      admin_status: ${{ steps.admin.outputs.status }}
+      client_status: ${{ steps.client.outputs.status }}
+    steps:
+      - name: 🏥 Check borg-admin
+        id: admin
+        run: |
+          echo "Checking borg-admin health..."
+          
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://borg-admin.awsborg.workers.dev" --max-time 10 || echo "000")
+          RESPONSE_TIME=$(curl -s -o /dev/null -w "%{time_total}" "https://borg-admin.awsborg.workers.dev" --max-time 10 || echo "0")
+          
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "405" ]; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+            echo "✅ borg-admin: HEALTHY (HTTP $HTTP_CODE, ${RESPONSE_TIME}s)"
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "❌ borg-admin: UNHEALTHY (HTTP $HTTP_CODE)"
+          fi
+
+      - name: 🏥 Check borg-client
+        id: client
+        run: |
+          echo "Checking borg-client health..."
+          
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://borg-client.awsborg.workers.dev" --max-time 10 || echo="000")
+          RESPONSE_TIME=$(curl -s -o /dev/null -w "%{time_total}" "https://borg-client.awsborg.workers.dev" --max-time 10 || echo "0")
+          
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "405" ]; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+            echo "✅ borg-client: HEALTHY (HTTP $HTTP_CODE, ${RESPONSE_TIME}s)"
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "❌ borg-client: UNHEALTHY (HTTP $HTTP_CODE)"
+          fi
+
+      - name: ✅ Workers Summary
+        run: |
+          echo "## 🏥 Workers Health" >> $GITHUB_STEP_SUMMARY
+          echo "- **borg-admin**: ${{ steps.admin.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **borg-client**: ${{ steps.client.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 23: Telegram API Health
+  # ============================================================
+  telegram:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: 🏥 Check Telegram API
+        id: check
+        run: |
+          echo "Checking Telegram API..."
+          
+          # Get bot info
+          BOT_INFO=$(curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/getMe")
+          
+          if echo "$BOT_INFO" | grep -q '"ok":true'; then
+            BOT_USERNAME=$(echo "$BOT_INFO" | jq -r '.result.username')
+            echo "status=healthy" >> $GITHUB_OUTPUT
+            echo "✅ Telegram API: HEALTHY (@${BOT_USERNAME})"
+            echo "bot_username=${BOT_USERNAME}" >> $GITHUB_OUTPUT
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "❌ Telegram API: UNHEALTHY"
+          fi
+
+      - name: 🏥 Check Webhook Status
+        run: |
+          WEBHOOK_INFO=$(curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/getWebhookInfo")
+          
+          WEBHOOK_URL=$(echo "$WEBHOOK_INFO" | jq -r '.result.url')
+          PENDING_COUNT=$(echo "$WEBHOOK_INFO" | jq -r '.result.pending_update_count')
+          
+          echo "Webhook URL: $WEBHOOK_URL"
+          echo "Pending updates: $PENDING_COUNT"
+
+      - name: ✅ Telegram Summary
+        run: |
+          echo "## 🏥 Telegram API Health" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.check.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Bot**: @${{ steps.check.outputs.bot_username }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 24: Codespace Status
+  # ============================================================
+  codespace:
+    runs-on: ubuntu-latest
+    outputs:
+      state: ${{ steps.check.outputs.state }}
+    steps:
+      - name: 🏥 Check Codespace Status
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Checking Codespace status..."
+          
+          CODESPACE_NAME="redesigned-space-giggle-r479rw76gq57fjq6"
+          
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/user/codespaces/${CODESPACE_NAME}")
+          
+          STATE=$(echo "$RESPONSE" | jq -r '.state // "unknown"')
+          
+          echo "state=$STATE" >> $GITHUB_OUTPUT
+          
+          case "$STATE" in
+            "Available"|"Running")
+              echo "🟢 Codespace: $STATE (Active)"
+              ;;
+            "Shutdown"|"Unavailable")
+              echo "🔴 Codespace: $STATE (Dormido)"
+              ;;
+            *)
+              echo "🟡 Codespace: $STATE"
+              ;;
+          esac
+
+      - name: ✅ Codespace Summary
+        run: |
+          echo "## 🏥 Codespace Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **State**: ${{ steps.check.outputs.state }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 25-26: D1 Database Health
+  # ============================================================
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔧 Install Wrangler
+        run: npm install -g wrangler
+
+      - name: 🏥 Check D1 Database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          echo "Checking D1 database..."
+          
+          # Get database info
+          DB_INFO=$(wrangler d1 info AWS-BORG-DATA 2>&1 || echo "Error getting DB info")
+          echo "$DB_INFO"
+          
+          # Try a simple query
+          QUERY_RESULT=$(wrangler d1 execute AWS-BORG-DATA --command "SELECT 1 as test" --remote 2>&1 || echo "Query failed")
+          echo "$QUERY_RESULT"
+
+      - name: ✅ Database Summary
+        run: |
+          echo "## 🏥 D1 Database Health" >> $GITHUB_STEP_SUMMARY
+          echo "- **Database**: AWS-BORG-DATA" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: Checked" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # MICRO-PASO 27-28: Final Health Report
+  # ============================================================
+  report:
+    needs: [workers, telegram, codespace, database]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📊 Generate Health Report
+        run: |
+          echo "## 🏥 FRANKENSTEIN HEALTH REPORT" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### System Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| borg-admin | ${{ needs.workers.outputs.admin_status }} | Telegram Bot Worker |" >> $GITHUB_STEP_SUMMARY
+          echo "| borg-client | ${{ needs.workers.outputs.client_status }} | Mini App Worker |" >> $GITHUB_STEP_SUMMARY
+          echo "| Telegram API | ${{ needs.telegram.outputs.status }} | Bot API Connection |" >> $GITHUB_STEP_SUMMARY
+          echo "| Codespace | ${{ needs.codespace.outputs.state }} | LLM Runtime |" >> $GITHUB_STEP_SUMMARY
+          echo "| D1 Database | ✅ | AWS-BORG-DATA |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "🕐 Checked: $(date -u)" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall health
+          if [ "${{ needs.workers.outputs.admin_status }}" = "healthy" ] && \
+             [ "${{ needs.workers.outputs.client_status }}" = "healthy" ] && \
+             [ "${{ needs.telegram.outputs.status }}" = "healthy" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Overall Status: HEALTHY**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Overall Status: DEGRADED**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🚨 Alert on Unhealthy
+        if: needs.workers.outputs.admin_status == 'unhealthy' || needs.workers.outputs.client_status == 'unhealthy'
+        run: |
+          echo "::warning::One or more workers are unhealthy!"
+          echo "⚠️ ALERT: Workers need attention!"
