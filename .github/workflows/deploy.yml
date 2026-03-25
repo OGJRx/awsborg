@@ -1,0 +1,74 @@
+# ============================================================
+# FRANKENSTEIN DEPLOYMENT - GitHub Actions
+# ============================================================
+# Deploys borg-admin and borg-client to Cloudflare Workers
+# Triggered on push to main branch
+# ============================================================
+
+name: Deploy Frankenstein
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: false
+        default: 'production'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy borg-admin
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: borg-admin
+          secrets: |
+            TELEGRAM_TOKEN
+            GEMINI_API_KEY
+            LLAMA_URL
+            GH_PAT
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLAMA_URL: ${{ secrets.LLAMA_URL }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+
+      - name: Deploy borg-client
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: borg-client
+
+      - name: Set Telegram Webhook
+        run: |
+          curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/setWebhook" \
+            -H "Content-Type: application/json" \
+            -d '{"url": "https://borg-admin.${{ vars.CF_SUBDOMAIN }}.workers.dev"}'
+
+  notify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Deployment Status
+        run: |
+          echo "## 🧠 Frankenstein Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- **borg-admin**: ✅ Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- **borg-client**: ✅ Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY

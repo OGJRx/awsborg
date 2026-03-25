@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+.wrangler/
+*.worker.js
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Temporary
+tmp/
+temp/
+.cache/
+
+# Models (large files)
+models/
+*.gguf
+*.bin
+
+# Cloudflare
+.mf/

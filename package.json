@@ -1,0 +1,27 @@
+{
+  "name": "awsborg-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frankenstein Architecture - LLM Telegram Bot",
+  "workspaces": [
+    "borg-admin",
+    "borg-client"
+  ],
+  "scripts": {
+    "deploy": "npm run deploy:admin && npm run deploy:client",
+    "deploy:admin": "cd borg-admin && npx wrangler deploy",
+    "deploy:client": "cd borg-client && npx wrangler deploy",
+    "dev:admin": "cd borg-admin && npx wrangler dev",
+    "dev:client": "cd borg-client && npx wrangler dev",
+    "tail": "npx wrangler tail borg-admin",
+    "db:migrate": "npx wrangler d1 migrations apply AWS-BORG-DATA",
+    "db:export": "npx wrangler d1 export AWS-BORG-DATA --output backup.sql"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
