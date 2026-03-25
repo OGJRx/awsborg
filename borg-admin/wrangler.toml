@@ -1,0 +1,33 @@
+# ============================================================
+# BORG-ADMIN - Backend Admin IA Worker
+# ============================================================
+# Stack: TypeScript Strict, grammY, Cloudflare Workers, D1
+# PROHIBITIONS: NO KV, NO R2
+# ============================================================
+
+name = "borg-admin"
+main = "src/index.ts"
+compatibility_date = "2024-03-18"
+workers_dev = true
+
+# ============================================================
+# D1 DATABASE (SQLite - NO KV, NO R2)
+# ============================================================
+[[d1_databases]]
+binding = "DB"
+database_name = "AWS-BORG-DATA"
+database_id = "3864ce7f-9d0f-45f4-b3e6-7e4722d353c6"
+migrations_dir = "../migrations"
+
+# ============================================================
+# SERVICE BINDINGS
+# ============================================================
+[[services]]
+binding = "CLIENT"
+service = "borg-client"
+
+# ============================================================
+# ENVIRONMENT VARIABLES (non-secret)
+# ============================================================
+[vars]
+ENVIRONMENT = "production"
