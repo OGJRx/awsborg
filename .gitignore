@@ -14,6 +14,10 @@ dist/
 .dev.vars
 *.pem
 *.key
+*.token
+*_token
+.github_token
+secrets/
 
 # IDE
 .idea/
